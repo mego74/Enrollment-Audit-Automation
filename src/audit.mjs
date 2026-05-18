@@ -29,6 +29,7 @@ const FORMULA_BAR_SELECTORS = [
   'textarea[aria-label*="formula" i]',
 ];
 const SCREENSHOT_DIRNAME = "reports";
+const SLATE_PAGE_RECYCLE_INTERVAL = 75;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -60,10 +61,9 @@ async function main() {
   });
 
   const sheetPage = await context.newPage();
-  const slatePage = await context.newPage();
+  let slatePage = await createSlatePage(context, slateSearchUrl);
 
   await sheetPage.goto(sheetInfo.rawUrl, { waitUntil: "domcontentloaded" });
-  await slatePage.goto(slateSearchUrl, { waitUntil: "domcontentloaded" });
 
   const terminal = readline.createInterface({
     input: process.stdin,
@@ -108,11 +108,22 @@ async function main() {
 
     const results = [];
     for (let index = 0; index < workItems.length; index += 1) {
+      if (index > 0 && index % SLATE_PAGE_RECYCLE_INTERVAL === 0) {
+        slatePage = await recreateSlatePage(slatePage, context, slateSearchUrl);
+      }
+
       const row = workItems[index];
       console.log(`[${index + 1}/${workItems.length}] Auditing row ${row.rowNumber} (${row.nNumber})`);
 
       try {
-        const audit = await auditStudent(slatePage, slateSearchUrl, row.nNumber);
+        const auditResult = await auditStudentWithRecovery(
+          slatePage,
+          context,
+          slateSearchUrl,
+          row.nNumber,
+        );
+        slatePage = auditResult.page;
+        const audit = auditResult.audit;
         const appStatus = mapAuditStatus(audit);
 
         const result = {
@@ -134,6 +145,9 @@ async function main() {
         console.log(`  -> ${appStatus}`);
       } catch (error) {
         const screenshotPath = await captureErrorScreenshot(slatePage, `slate-row-${row.rowNumber}`);
+        if (shouldResetSlatePage(error)) {
+          slatePage = await recreateSlatePage(slatePage, context, slateSearchUrl);
+        }
         results.push({
           rowNumber: row.rowNumber,
           name: row.name,
@@ -162,6 +176,66 @@ async function main() {
   } finally {
     terminal.close();
   }
+}
+
+async function createSlatePage(context, slateSearchUrl) {
+  const page = await context.newPage();
+  await page.goto(slateSearchUrl, { waitUntil: "domcontentloaded" });
+  return page;
+}
+
+async function recreateSlatePage(previousPage, context, slateSearchUrl) {
+  if (previousPage && !previousPage.isClosed()) {
+    await previousPage.close().catch(() => {});
+  }
+
+  return createSlatePage(context, slateSearchUrl);
+}
+
+async function auditStudentWithRecovery(slatePage, context, slateSearchUrl, nNumber) {
+  let currentPage = slatePage;
+  let lastError = null;
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (!currentPage || currentPage.isClosed()) {
+      currentPage = await createSlatePage(context, slateSearchUrl);
+    }
+
+    try {
+      const audit = await auditStudent(currentPage, slateSearchUrl, nNumber);
+      return {
+        page: currentPage,
+        audit,
+      };
+    } catch (error) {
+      lastError = error;
+      if (!shouldRetryAuditError(error) || attempt === 1) {
+        break;
+      }
+
+      currentPage = await recreateSlatePage(currentPage, context, slateSearchUrl);
+    }
+  }
+
+  throw lastError;
+}
+
+function shouldRetryAuditError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return [
+    "Timeout",
+    "Page crashed",
+    "Target page, context or browser has been closed",
+    "ERR_ABORTED",
+  ].some((fragment) => message.includes(fragment));
+}
+
+function shouldResetSlatePage(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return [
+    "Page crashed",
+    "Target page, context or browser has been closed",
+  ].some((fragment) => message.includes(fragment));
 }
 
 async function maybeWriteResults(terminal, sheetPage, sheetInfo, writableResults, options, sourceLabel) {
@@ -753,11 +827,10 @@ async function auditStudent(slatePage, slateSearchUrl, nNumber) {
     throw new Error(`No Slate result was found for ${nNumber}.`);
   }
 
-  await resultLink.click();
+  await resultLink.click({ noWaitAfter: true });
   await slatePage.waitForURL(/\/manage\/lookup\/record\?id=/, { timeout: 15_000 }).catch(() => {});
   await slatePage.waitForLoadState("domcontentloaded");
   await openApplicationTab(slatePage);
-  await waitForApplicationView(slatePage);
 
   const relevantRows = await extractRelevantChecklistRows(slatePage);
   const proofOfDegree = relevantRows.find((row) => /^Proof of Degree$/i.test(row.subject));
@@ -780,23 +853,35 @@ async function openApplicationTab(slatePage) {
     return;
   }
 
-  const clicked = await clickApplicationTab(slatePage);
-  if (!clicked) {
-    throw new Error("Could not find the Fall 26 application tab on the Slate record.");
-  }
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const clicked = await clickApplicationTab(slatePage);
+    if (!clicked) {
+      throw new Error("Could not find the application tab on the Slate record.");
+    }
 
-  await waitForApplicationView(slatePage);
+    try {
+      await waitForApplicationView(slatePage);
+      return;
+    } catch (error) {
+      if (attempt === 1) {
+        throw error;
+      }
+      await delay(1_000);
+    }
+  }
 }
 
 async function clickApplicationTab(slatePage) {
-  const appTabLocator = slatePage.locator('a[data-tab="Application"]').first();
+  const appTabLocator = slatePage
+    .locator('ul.tabs a[data-tab="Application"], ul.tabs a[data-href*="/manage/lookup/application"]')
+    .first();
   if ((await appTabLocator.count()) > 0) {
-    await appTabLocator.click();
+    await appTabLocator.click({ noWaitAfter: true });
     return true;
   }
 
   const lazyAppClicked = await slatePage.evaluate(() => {
-    const candidate = document.querySelector('a[data-tab="Application"]');
+    const candidate = document.querySelector('ul.tabs a[data-tab="Application"], ul.tabs a[data-href*="/manage/lookup/application"]');
     if (!(candidate instanceof HTMLElement)) {
       return false;
     }
@@ -810,27 +895,20 @@ async function clickApplicationTab(slatePage) {
   }
 
   const roleBasedCandidates = [
+    slatePage.locator("ul.tabs a").filter({ hasText: TERM_TAB_PATTERN }).first(),
     slatePage.getByRole("link", { name: TERM_TAB_PATTERN }).first(),
-    slatePage.getByRole("tab", { name: TERM_TAB_PATTERN }).first(),
-    slatePage.getByRole("button", { name: TERM_TAB_PATTERN }).first(),
   ];
 
   for (const candidate of roleBasedCandidates) {
     if ((await candidate.count()) > 0) {
-      await candidate.click();
+      await candidate.click({ noWaitAfter: true });
       return true;
     }
   }
 
-  const textCandidate = slatePage.getByText(TERM_TAB_PATTERN).first();
-  if ((await textCandidate.count()) > 0) {
-    await textCandidate.click();
-    return true;
-  }
-
   const domClicked = await slatePage.evaluate((patternSource) => {
     const matcher = new RegExp(patternSource, "i");
-    const elements = Array.from(document.querySelectorAll("a, button, td, div, span"));
+    const elements = Array.from(document.querySelectorAll("ul.tabs a"));
     const candidate = elements.find((element) => {
       const text = (element.textContent || "").replace(/\s+/g, " ").trim();
       return matcher.test(text);
@@ -852,9 +930,8 @@ async function isApplicationViewVisible(slatePage) {
     slatePage.getByText("Checklist", { exact: true }),
     slatePage.getByText("University ID:", { exact: false }),
     slatePage.getByText("Current Bin:", { exact: false }),
+    slatePage.getByText("Enrollment Audit:", { exact: false }),
     slatePage.getByText("Read Application", { exact: false }),
-    slatePage.getByText("Proof of Degree", { exact: false }),
-    slatePage.getByText("Final Official Transcript", { exact: false }),
   ];
 
   for (const signal of signals) {
@@ -868,7 +945,7 @@ async function isApplicationViewVisible(slatePage) {
 
 async function waitForApplicationView(slatePage) {
   await slatePage.waitForFunction(() => {
-    const appTab = document.querySelector('a[data-tab="Application"]');
+    const appTab = document.querySelector('ul.tabs a[data-tab="Application"], ul.tabs a[data-href*="/manage/lookup/application"]');
     const targetSelector = appTab?.getAttribute("data-div");
     if (!targetSelector) {
       return false;
@@ -888,23 +965,23 @@ async function waitForApplicationView(slatePage) {
       "Checklist",
       "University ID:",
       "Current Bin:",
+      "Enrollment Audit:",
       "Read Application",
-      "Proof of Degree",
-      "Final Official Transcript",
     ].some((marker) => bodyText.includes(marker));
-  }, { timeout: 15_000 });
+  }, { timeout: 20_000 });
 
   await slatePage.waitForLoadState("networkidle").catch(() => {});
 
   await slatePage.waitForFunction(() => {
     const text = (document.body?.innerText || "").replace(/\s+/g, " ");
-    const hasChecklist = text.includes("Checklist");
-    const hasUniversityId = text.includes("University ID:");
-    const hasRequiredDocRow =
-      text.includes("Proof of Degree") || text.includes("Final Official Transcript");
-
-    return hasChecklist && hasUniversityId && hasRequiredDocRow;
-  }, { timeout: 15_000 });
+    return [
+      "Checklist",
+      "University ID:",
+      "Current Bin:",
+      "Enrollment Audit:",
+      "Read Application",
+    ].some((marker) => text.includes(marker));
+  }, { timeout: 20_000 });
 }
 
 async function extractRelevantChecklistRows(slatePage) {
