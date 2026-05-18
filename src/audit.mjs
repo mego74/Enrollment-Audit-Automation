@@ -76,7 +76,7 @@ async function main() {
     console.log("Use this browser profile for future runs so your session stays saved.");
     await terminal.question("Press Enter here when both pages are ready... ");
 
-    sheetInfo = await resolveSheetInfo(sheetPage, sheetInfo);
+    sheetInfo = await resolveSheetInfo(sheetPage, sheetInfo, options);
     console.log(`Using Google Sheet gid ${sheetInfo.gid}`);
 
     if (options.setupOnly) {
@@ -215,6 +215,7 @@ function parseArgs(argv) {
     rowFrom: null,
     rowTo: null,
     reportPath: null,
+    sheetTab: "",
     statusColumn: "E",
     overwrite: false,
     dryRun: false,
@@ -258,6 +259,10 @@ function parseArgs(argv) {
         break;
       case "--report":
         options.reportPath = next;
+        index += 1;
+        break;
+      case "--sheet-tab":
+        options.sheetTab = String(next || "").trim();
         index += 1;
         break;
       case "--sheet-url":
@@ -327,6 +332,7 @@ Optional flags:
   --row-from 14
   --row-to 20
   --report reports/audit-report-...json
+  --sheet-tab Test
   --status-column E
   --overwrite
   --dry-run
@@ -374,13 +380,46 @@ function extractGidFromUrl(value) {
   return value.match(/[#&]gid=([0-9]+)/)?.[1] ?? null;
 }
 
-async function resolveSheetInfo(sheetPage, sheetInfo) {
+async function resolveSheetInfo(sheetPage, sheetInfo, options) {
+  await sheetPage.waitForLoadState("domcontentloaded");
+  await delay(2_000);
+
+  if (options.sheetTab) {
+    const beforeUrl = sheetPage.url();
+    const beforeGid = extractGidFromUrl(beforeUrl);
+    const selectedTab = await clickSheetTabByName(sheetPage, options.sheetTab);
+    if (!selectedTab) {
+      throw new Error(`Could not find the Google Sheets tab named "${options.sheetTab}".`);
+    }
+
+    await waitForSheetTabActivation(sheetPage, selectedTab.name, beforeGid).catch(() => {});
+
+    await delay(1_000);
+    const tabUrl = sheetPage.url();
+    const tabGid = extractGidFromUrl(tabUrl);
+    if (tabGid) {
+      return {
+        ...sheetInfo,
+        rawUrl: tabUrl,
+        gid: tabGid,
+        sheetTab: selectedTab.name,
+      };
+    }
+
+    const activeTab = await getActiveSheetTab(sheetPage);
+    if (activeTab?.gid) {
+      return {
+        ...sheetInfo,
+        rawUrl: sheetPage.url(),
+        gid: activeTab.gid,
+        sheetTab: activeTab.name,
+      };
+    }
+  }
+
   if (sheetInfo.gid) {
     return sheetInfo;
   }
-
-  await sheetPage.waitForLoadState("domcontentloaded");
-  await delay(2_000);
 
   const currentUrl = sheetPage.url();
   const urlGid = extractGidFromUrl(currentUrl);
@@ -389,6 +428,7 @@ async function resolveSheetInfo(sheetPage, sheetInfo) {
       ...sheetInfo,
       rawUrl: currentUrl,
       gid: urlGid,
+      sheetTab: options.sheetTab || sheetInfo.sheetTab || "",
     };
   }
 
@@ -417,13 +457,92 @@ async function resolveSheetInfo(sheetPage, sheetInfo) {
     return {
       ...sheetInfo,
       gid: pageGid,
+      sheetTab: options.sheetTab || sheetInfo.sheetTab || "",
     };
   }
 
   return {
     ...sheetInfo,
     gid: "0",
+    sheetTab: options.sheetTab || sheetInfo.sheetTab || "",
   };
+}
+
+async function clickSheetTabByName(sheetPage, requestedTabName) {
+  const allTabs = await listSheetTabsOnPage(sheetPage);
+  const wanted = normalizeSheetTabName(requestedTabName);
+  const exact = allTabs.find((tab) => normalizeSheetTabName(tab.name) === wanted);
+  const partial = allTabs.find((tab) => normalizeSheetTabName(tab.name).includes(wanted));
+  const match = exact || partial;
+
+  if (!match) {
+    return null;
+  }
+
+  const locator = sheetPage
+    .locator(".docs-sheet-tab")
+    .filter({
+      has: sheetPage.locator(".docs-sheet-tab-name", {
+        hasText: new RegExp(`^${escapeRegex(match.name)}$`),
+      }),
+    })
+    .first();
+
+  await locator.scrollIntoViewIfNeeded();
+  await locator.click({ timeout: 5_000 });
+  return match;
+}
+
+async function waitForSheetTabActivation(sheetPage, requestedTabName, previousGid) {
+  const wanted = normalizeSheetTabName(requestedTabName);
+  await sheetPage.waitForFunction(
+    ({ expectedName, previousSheetGid }) => {
+      const normalize = (value) => value.replace(/\s+/g, " ").replace(/^\d+/, "").trim().toLowerCase();
+      const active = document.querySelector(".docs-sheet-tab.docs-sheet-active-tab .docs-sheet-tab-name")
+        || document.querySelector(".docs-sheet-tab.docs-sheet-active-tab");
+      const activeName = normalize(active?.textContent || "");
+      const currentGid = window.location.href.match(/[#&]gid=([0-9]+)/)?.[1] ?? null;
+      return activeName === expectedName || (currentGid && currentGid !== previousSheetGid);
+    },
+    { expectedName: wanted, previousSheetGid: previousGid ?? null },
+    { timeout: 7_500 },
+  );
+}
+
+async function getActiveSheetTab(sheetPage) {
+  const tabs = await listSheetTabsOnPage(sheetPage);
+  return tabs.find((tab) => tab.active) ?? null;
+}
+
+async function listSheetTabsOnPage(sheetPage) {
+  return sheetPage.evaluate(() => {
+    const normalize = (value) => value.replace(/\s+/g, " ").replace(/^\d+/, "").trim();
+    const tabs = Array.from(document.querySelectorAll(".docs-sheet-tab"));
+
+    return tabs
+      .map((tab) => {
+        const nameNode = tab.querySelector(".docs-sheet-tab-name");
+        const name = normalize(nameNode?.textContent || tab.textContent || "");
+        if (!name) {
+          return null;
+        }
+
+        return {
+          name,
+          active: tab.classList.contains("docs-sheet-active-tab"),
+          gid: window.location.href.match(/[#&]gid=([0-9]+)/)?.[1] ?? null,
+        };
+      })
+      .filter(Boolean);
+  });
+}
+
+function normalizeSheetTabName(value) {
+  return String(value || "").replace(/\s+/g, " ").replace(/^\d+/, "").trim().toLowerCase();
+}
+
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function makeSheetRangeUrl(sheetInfo, range) {

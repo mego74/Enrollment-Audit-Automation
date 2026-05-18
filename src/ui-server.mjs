@@ -4,12 +4,17 @@ import http from "node:http";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
+
+import { chromium } from "playwright-core";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, "..");
 const uiRoot = path.join(__dirname, "ui");
 const port = Number(process.env.PORT || 4318);
+const browserProfileDir = path.join(projectRoot, ".browser-profile");
+const browserPort = 9222;
 
 const STATUS_DEFINITIONS = {
   missing: {
@@ -58,6 +63,7 @@ const state = {
   lastCommand: null,
   lastConfig: {
     sheetUrl: "",
+    sheetTab: "",
     nColumn: "D",
     statusColumn: "E",
     browser: "brave",
@@ -316,6 +322,7 @@ function validateColumnRef(value, fallback) {
 function normalizeConfig(input) {
   return {
     sheetUrl: String(input.sheetUrl || "").trim(),
+    sheetTab: String(input.sheetTab || "").trim(),
     nColumn: validateColumnRef(input.nColumn, "D"),
     statusColumn: validateColumnRef(input.statusColumn, "E"),
     browser: input.browser === "chrome" ? "chrome" : "brave",
@@ -344,6 +351,10 @@ function buildAuditArgs(config, mode) {
     "--browser",
     config.browser,
   ];
+
+  if (config.sheetTab) {
+    args.push("--sheet-tab", config.sheetTab);
+  }
 
   if (mode === "setup") {
     args.push("--setup-only");
@@ -375,6 +386,139 @@ function buildAuditArgs(config, mode) {
   }
 
   return args;
+}
+
+function parseSheetUrl(sheetUrl) {
+  const url = new URL(sheetUrl);
+  const match = url.pathname.match(/\/spreadsheets\/d\/([^/]+)/);
+  if (!match) {
+    throw new Error("Could not parse the Google Sheet id from the provided URL.");
+  }
+
+  return {
+    rawUrl: sheetUrl,
+    sheetId: match[1],
+  };
+}
+
+function getBrowserExecutable(browserName) {
+  const normalized = browserName.toLowerCase();
+  if (normalized === "brave") {
+    return "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser";
+  }
+
+  if (normalized === "chrome" || normalized === "google-chrome") {
+    return "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  }
+
+  throw new Error(`Unsupported browser "${browserName}". Use "brave" or "chrome".`);
+}
+
+async function isJsonEndpointReady(url) {
+  try {
+    const response = await fetch(url);
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function ensureBrowserLaunched(browserName, debugPort) {
+  const executablePath = getBrowserExecutable(browserName);
+  const versionUrl = `http://127.0.0.1:${debugPort}/json/version`;
+
+  if (await isJsonEndpointReady(versionUrl)) {
+    return;
+  }
+
+  spawn(executablePath, [
+    `--remote-debugging-port=${debugPort}`,
+    `--user-data-dir=${browserProfileDir}`,
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--new-window",
+    "about:blank",
+  ], {
+    detached: true,
+    stdio: "ignore",
+  }).unref();
+
+  const timeoutAt = Date.now() + 20_000;
+  while (Date.now() < timeoutAt) {
+    if (await isJsonEndpointReady(versionUrl)) {
+      return;
+    }
+    await delay(500);
+  }
+
+  throw new Error(`Could not connect to the browser on port ${debugPort}.`);
+}
+
+function normalizeSheetTabName(value) {
+  return String(value || "").replace(/\s+/g, " ").replace(/^\d+/, "").trim();
+}
+
+async function loadSheetTabs(config) {
+  const sheetInfo = parseSheetUrl(config.sheetUrl);
+  await ensureBrowserLaunched(config.browser, browserPort);
+
+  const browser = await chromium.connectOverCDP(`http://127.0.0.1:${browserPort}`);
+  try {
+    const context = browser.contexts()[0] ?? (await browser.newContext());
+    const page = await context.newPage();
+
+    try {
+      await page.goto(sheetInfo.rawUrl, { waitUntil: "domcontentloaded" });
+      await page.waitForLoadState("domcontentloaded");
+      await delay(2_000);
+
+      const payload = await page.evaluate(() => {
+        const normalize = (value) => value.replace(/\s+/g, " ").replace(/^\d+/, "").trim();
+        const tabs = Array.from(document.querySelectorAll(".docs-sheet-tab"))
+          .map((tab) => {
+            const nameNode = tab.querySelector(".docs-sheet-tab-name");
+            const name = normalize(nameNode?.textContent || tab.textContent || "");
+            if (!name) {
+              return null;
+            }
+
+            return {
+              name,
+              active: tab.classList.contains("docs-sheet-active-tab"),
+            };
+          })
+          .filter(Boolean);
+
+        return {
+          title: document.title,
+          tabs,
+          currentUrl: window.location.href,
+        };
+      });
+
+      const uniqueTabs = [];
+      const seen = new Set();
+      for (const tab of payload.tabs) {
+        const key = normalizeSheetTabName(tab.name).toLowerCase();
+        if (!key || seen.has(key)) {
+          continue;
+        }
+        seen.add(key);
+        uniqueTabs.push(tab);
+      }
+
+      return {
+        tabs: uniqueTabs,
+        activeTab: uniqueTabs.find((tab) => tab.active)?.name ?? "",
+        title: payload.title,
+        currentUrl: payload.currentUrl,
+      };
+    } finally {
+      await page.close().catch(() => {});
+    }
+  } finally {
+    await browser.close().catch(() => {});
+  }
 }
 
 function startRun(mode, config) {
@@ -511,6 +655,16 @@ const server = http.createServer(async (request, response) => {
       const body = normalizeConfig(await readRequestBody(request));
       startRun("audit", body);
       sendJson(response, 200, { ok: true });
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/sheet-tabs") {
+      const body = normalizeConfig(await readRequestBody(request));
+      if (!body.sheetUrl) {
+        throw new Error("Spreadsheet URL is required.");
+      }
+      const tabs = await loadSheetTabs(body);
+      sendJson(response, 200, { ok: true, ...tabs });
       return;
     }
 

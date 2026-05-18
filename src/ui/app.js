@@ -22,6 +22,7 @@ const summaryCounts = {
 
 const fields = {
   sheetUrl: document.querySelector("#sheetUrl"),
+  sheetTab: document.querySelector("#sheetTab"),
   nColumn: document.querySelector("#nColumn"),
   statusColumn: document.querySelector("#statusColumn"),
   browser: document.querySelector("#browser"),
@@ -33,6 +34,12 @@ const fields = {
 const STORAGE_KEY = "slate-audit-ui-config";
 let currentState = null;
 let eventSource = null;
+let tabLoadTimer = null;
+let loadedSheetTabsKey = "";
+
+const DEFAULT_SHEET_TAB_LABEL = "Current sheet in link";
+const LOADING_SHEET_TAB_LABEL = "Loading sheet tabs...";
+const EMPTY_SHEET_TAB_LABEL = "No sheet tabs found";
 
 function loadSavedConfig() {
   try {
@@ -46,9 +53,46 @@ function saveConfig(config) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
 }
 
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function setSheetTabOptions(tabs = [], selectedValue = "", placeholderLabel = DEFAULT_SHEET_TAB_LABEL) {
+  const previousValue = selectedValue || fields.sheetTab.dataset.requestedValue || fields.sheetTab.value || "";
+  const options = [
+    `<option value="">${escapeHtml(placeholderLabel)}</option>`,
+    ...tabs.map((tab) => `<option value="${escapeHtml(tab.name)}">${escapeHtml(tab.name)}</option>`),
+  ];
+
+  fields.sheetTab.innerHTML = options.join("");
+  const activeTab = tabs.find((tab) => tab.active)?.name || "";
+  const preferredValue = tabs.some((tab) => tab.name === previousValue)
+    ? previousValue
+    : activeTab;
+  fields.sheetTab.value = preferredValue;
+  fields.sheetTab.dataset.requestedValue = preferredValue;
+}
+
+function setSheetTabLoading(isLoading) {
+  fields.sheetTab.disabled = isLoading;
+  if (isLoading) {
+    setSheetTabOptions([], fields.sheetTab.value, LOADING_SHEET_TAB_LABEL);
+  }
+}
+
+function getSheetTabLoadKey() {
+  return `${fields.browser.value}::${fields.sheetUrl.value.trim()}`;
+}
+
 function getConfigFromForm() {
   return {
     sheetUrl: fields.sheetUrl.value.trim(),
+    sheetTab: fields.sheetTab.value.trim(),
     nColumn: fields.nColumn.value.trim().toUpperCase() || "D",
     statusColumn: fields.statusColumn.value.trim().toUpperCase() || "E",
     browser: fields.browser.value,
@@ -60,6 +104,16 @@ function getConfigFromForm() {
 
 function applyConfigToForm(config) {
   fields.sheetUrl.value = config.sheetUrl || "";
+  if (config.sheetTab) {
+    const hasOption = Array.from(fields.sheetTab.options).some((option) => option.value === config.sheetTab);
+    if (!hasOption) {
+      setSheetTabOptions([{ name: config.sheetTab, active: false }], config.sheetTab, DEFAULT_SHEET_TAB_LABEL);
+    }
+    fields.sheetTab.value = config.sheetTab;
+  } else if (!fields.sheetTab.options.length) {
+    setSheetTabOptions();
+  }
+  fields.sheetTab.dataset.requestedValue = config.sheetTab || "";
   fields.nColumn.value = config.nColumn || "D";
   fields.statusColumn.value = config.statusColumn || "E";
   fields.browser.value = config.browser || "brave";
@@ -83,6 +137,55 @@ async function postJson(url, payload = {}) {
   }
 
   return body;
+}
+
+async function loadSheetTabs({ silent = true } = {}) {
+  const sheetUrl = fields.sheetUrl.value.trim();
+  if (!sheetUrl) {
+    loadedSheetTabsKey = "";
+    setSheetTabOptions([], "", DEFAULT_SHEET_TAB_LABEL);
+    return;
+  }
+
+  setSheetTabLoading(true);
+  try {
+    const response = await postJson("/api/sheet-tabs", {
+      sheetUrl,
+      browser: fields.browser.value,
+    });
+
+    if (response.tabs?.length) {
+      const requestedValue = fields.sheetTab.dataset.requestedValue || "";
+      const defaultValue = requestedValue || response.activeTab || "";
+      setSheetTabOptions(response.tabs, defaultValue, DEFAULT_SHEET_TAB_LABEL);
+      loadedSheetTabsKey = getSheetTabLoadKey();
+      return;
+    }
+
+    loadedSheetTabsKey = getSheetTabLoadKey();
+    setSheetTabOptions([], "", EMPTY_SHEET_TAB_LABEL);
+  } catch (error) {
+    loadedSheetTabsKey = "";
+    setSheetTabOptions([], "", DEFAULT_SHEET_TAB_LABEL);
+    if (!silent) {
+      alert(error.message);
+    }
+  } finally {
+    fields.sheetTab.disabled = false;
+  }
+}
+
+function scheduleSheetTabLoad() {
+  window.clearTimeout(tabLoadTimer);
+  tabLoadTimer = window.setTimeout(() => {
+    loadSheetTabs({ silent: true }).catch(() => {});
+  }, 500);
+}
+
+function resetSheetTabDropdown() {
+  loadedSheetTabsKey = "";
+  fields.sheetTab.dataset.requestedValue = "";
+  setSheetTabOptions([], "", DEFAULT_SHEET_TAB_LABEL);
 }
 
 async function refreshState() {
@@ -299,6 +402,28 @@ actionButton.addEventListener("click", async () => {
   } catch (error) {
     alert(error.message);
   }
+});
+
+fields.sheetUrl.addEventListener("input", () => {
+  window.clearTimeout(tabLoadTimer);
+  resetSheetTabDropdown();
+});
+
+fields.browser.addEventListener("change", () => {
+  window.clearTimeout(tabLoadTimer);
+  resetSheetTabDropdown();
+});
+
+fields.sheetTab.addEventListener("focus", () => {
+  if (!fields.sheetUrl.value.trim()) {
+    return;
+  }
+
+  if (loadedSheetTabsKey === getSheetTabLoadKey()) {
+    return;
+  }
+
+  loadSheetTabs({ silent: false }).catch(() => {});
 });
 
 applyConfigToForm(loadSavedConfig());
