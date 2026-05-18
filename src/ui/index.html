@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Slate Audit Control Room</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Slate + Google Sheets</p>
+          <h1>Enrollment Audit</h1>
+          <p class="lede">
+            Paste the spreadsheet link, click start, log into Slate if asked, and watch the status
+            decisions land in one place.
+          </p>
+        </div>
+        <div class="hero-panel">
+          <div class="hero-stat">
+            <span class="hero-stat-label">Current Step</span>
+            <strong id="hero-status-text">Idle</strong>
+          </div>
+          <div class="hero-stat">
+            <span class="hero-stat-label">Rows</span>
+            <strong id="hero-progress-text">Waiting to start</strong>
+          </div>
+        </div>
+      </header>
+
+      <main class="dashboard-grid">
+        <section class="card form-card">
+          <div class="card-heading">
+            <p class="kicker">Start Here</p>
+            <h2>Sheet Details</h2>
+          </div>
+
+          <form id="audit-form" class="config-form">
+            <label class="field">
+              <span>Spreadsheet Link</span>
+              <input
+                id="sheetUrl"
+                name="sheetUrl"
+                type="url"
+                placeholder="https://docs.google.com/spreadsheets/d/..."
+                required
+              />
+            </label>
+
+            <div class="field-row">
+              <label class="field">
+                <span>N-number Column</span>
+                <input id="nColumn" name="nColumn" type="text" maxlength="4" value="D" required />
+              </label>
+
+              <label class="field">
+                <span>App Status Column</span>
+                <input id="statusColumn" name="statusColumn" type="text" maxlength="4" value="E" required />
+              </label>
+            </div>
+
+            <details class="advanced-panel">
+              <summary>Advanced options</summary>
+              <div class="advanced-grid">
+                <div class="field-row">
+                  <label class="field">
+                    <span>Browser</span>
+                    <select id="browser" name="browser">
+                      <option value="brave">Brave</option>
+                      <option value="chrome">Chrome</option>
+                    </select>
+                  </label>
+
+                  <label class="field">
+                    <span>Limit</span>
+                    <input id="limit" name="limit" type="number" min="1" placeholder="Optional" />
+                  </label>
+                </div>
+
+                <div class="field-row">
+                  <label class="field">
+                    <span>Row From</span>
+                    <input id="rowFrom" name="rowFrom" type="number" min="2" placeholder="Optional" />
+                  </label>
+
+                  <label class="field">
+                    <span>Row To</span>
+                    <input id="rowTo" name="rowTo" type="number" min="2" placeholder="Optional" />
+                  </label>
+                </div>
+              </div>
+            </details>
+
+            <div class="button-row button-row-simple">
+              <button type="submit" class="button button-primary button-primary-wide" id="runButton">Start Audit</button>
+            </div>
+          </form>
+        </section>
+
+        <section class="card status-card">
+          <div class="card-heading">
+            <p class="kicker">Live Run</p>
+            <h2>Audit Summary</h2>
+          </div>
+
+          <div class="status-stack">
+            <div class="status-pill" id="run-status-pill">Idle</div>
+            <div class="progress-panel">
+              <div class="progress-copy">
+                <strong id="progress-label">No active run</strong>
+                <span id="progress-detail">Start a run from the left panel.</span>
+              </div>
+              <div class="progress-bar">
+                <div id="progress-fill"></div>
+              </div>
+            </div>
+
+            <div class="summary-grid">
+              <article class="summary-card summary-card-missing">
+                <span class="summary-label">Missing docs</span>
+                <strong id="count-missing">0</strong>
+              </article>
+              <article class="summary-card summary-card-complete">
+                <span class="summary-label">Audit complete</span>
+                <strong id="count-complete">0</strong>
+              </article>
+              <article class="summary-card summary-card-fotOnly">
+                <span class="summary-label">FOT only</span>
+                <strong id="count-fotOnly">0</strong>
+              </article>
+              <article class="summary-card summary-card-podOnly">
+                <span class="summary-label">POD only</span>
+                <strong id="count-podOnly">0</strong>
+              </article>
+            </div>
+
+            <div class="action-card hidden" id="actionCard">
+              <div>
+                <p class="action-title" id="actionTitle">Action Needed</p>
+                <p class="action-description" id="actionDescription"></p>
+              </div>
+              <button type="button" class="button button-primary" id="actionButton">Continue</button>
+            </div>
+
+            <section class="results-card">
+              <div class="results-card-heading">
+                <span class="meta-label">Latest Results</span>
+                <strong id="resultsHeadline">No rows processed yet</strong>
+              </div>
+              <ul id="recentResults" class="results-list"></ul>
+            </section>
+
+            <div class="button-row">
+              <button type="button" class="button button-danger hidden" id="stopButton">Stop Active Run</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="card console-card">
+          <div class="card-heading">
+            <p class="kicker">Process Feed</p>
+            <h2>Live Console</h2>
+          </div>
+          <pre id="consoleOutput" class="console-output"></pre>
+        </section>
+      </main>
+    </div>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>

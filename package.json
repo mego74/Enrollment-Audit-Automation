@@ -1,0 +1,19 @@
+{
+  "name": "work",
+  "version": "1.0.0",
+  "description": "Slate and Google Sheets enrollment audit automation",
+  "scripts": {
+    "audit": "node src/audit.mjs",
+    "audit:dry": "node src/audit.mjs --dry-run",
+    "audit:setup": "node src/audit.mjs --setup-only",
+    "ui": "node src/ui-server.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "csv-parse": "^6.2.1",
+    "playwright-core": "^1.60.0"
+  }
+}

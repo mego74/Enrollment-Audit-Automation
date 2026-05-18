@@ -1,0 +1,4 @@
+node_modules/
+.browser-profile/
+reports/
+.DS_Store
