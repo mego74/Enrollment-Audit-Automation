@@ -175,6 +175,11 @@ async function main() {
     await maybeWriteResults(terminal, sheetPage, sheetInfo, writableResults, options, "audit");
   } finally {
     terminal.close();
+    await Promise.allSettled([
+      sheetPage?.close(),
+      slatePage?.close(),
+    ]);
+    await browser.close().catch(() => {});
   }
 }
 

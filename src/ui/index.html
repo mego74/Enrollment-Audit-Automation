@@ -70,6 +70,13 @@
               </label>
             </div>
 
+            <div class="field-row">
+              <label class="field">
+                <span>Comments Column</span>
+                <input id="commentColumn" name="commentColumn" type="text" maxlength="4" value="F" required />
+              </label>
+            </div>
+
             <details class="advanced-panel">
               <summary>Advanced options</summary>
               <div class="advanced-grid">
@@ -104,6 +111,7 @@
 
             <div class="button-row button-row-simple">
               <button type="submit" class="button button-primary button-primary-wide" id="runButton">Start Audit</button>
+              <button type="button" class="button button-secondary button-primary-wide" id="transcriptRunButton">Start FOT Check</button>
             </div>
           </form>
         </section>
@@ -111,7 +119,7 @@
         <section class="card status-card">
           <div class="card-heading">
             <p class="kicker">Live Run</p>
-            <h2>Audit Summary</h2>
+            <h2>Run Summary</h2>
           </div>
 
           <div class="status-stack">

@@ -1,5 +1,6 @@
 const form = document.querySelector("#audit-form");
 const stopButton = document.querySelector("#stopButton");
+const transcriptRunButton = document.querySelector("#transcriptRunButton");
 const actionCard = document.querySelector("#actionCard");
 const actionButton = document.querySelector("#actionButton");
 const actionTitle = document.querySelector("#actionTitle");
@@ -25,6 +26,7 @@ const fields = {
   sheetTab: document.querySelector("#sheetTab"),
   nColumn: document.querySelector("#nColumn"),
   statusColumn: document.querySelector("#statusColumn"),
+  commentColumn: document.querySelector("#commentColumn"),
   browser: document.querySelector("#browser"),
   limit: document.querySelector("#limit"),
   rowFrom: document.querySelector("#rowFrom"),
@@ -95,6 +97,7 @@ function getConfigFromForm() {
     sheetTab: fields.sheetTab.value.trim(),
     nColumn: fields.nColumn.value.trim().toUpperCase() || "D",
     statusColumn: fields.statusColumn.value.trim().toUpperCase() || "E",
+    commentColumn: fields.commentColumn.value.trim().toUpperCase() || "F",
     browser: fields.browser.value,
     limit: fields.limit.value.trim(),
     rowFrom: fields.rowFrom.value.trim(),
@@ -116,6 +119,7 @@ function applyConfigToForm(config) {
   fields.sheetTab.dataset.requestedValue = config.sheetTab || "";
   fields.nColumn.value = config.nColumn || "D";
   fields.statusColumn.value = config.statusColumn || "E";
+  fields.commentColumn.value = config.commentColumn || "F";
   fields.browser.value = config.browser || "brave";
   fields.limit.value = config.limit || "";
   fields.rowFrom.value = config.rowFrom || "";
@@ -226,6 +230,16 @@ function formatStatus(status) {
   }
 }
 
+function formatMode(mode) {
+  if (mode === "transcriptSync") {
+    return "FOT Check";
+  }
+  if (mode === "setup") {
+    return "Sign-in Setup";
+  }
+  return "Audit";
+}
+
 function updateProgress(progress) {
   if (currentState?.writeProgress?.total) {
     const writeProgress = currentState.writeProgress;
@@ -252,6 +266,17 @@ function updateProgress(progress) {
     progressDetail.textContent = "If Google Sheets or Slate asks you to log in, finish that in the browser window.";
     heroProgressText.textContent = "Opening";
     progressFill.style.width = "16%";
+    return;
+  }
+
+  if (currentState?.mode === "transcriptSync" && progress?.total) {
+    const ratio = Math.max(0, Math.min(100, Math.round((progress.current / progress.total) * 100)));
+    progressLabel.textContent = `${progress.current} of ${progress.total} applicants`;
+    progressDetail.textContent = progress.rowNumber
+      ? `Checking applicant on row ${progress.rowNumber}${progress.nNumber ? ` (${progress.nNumber})` : ""}.`
+      : `Prepared for ${progress.total} applicants.`;
+    heroProgressText.textContent = `${progress.current}/${progress.total}`;
+    progressFill.style.width = `${ratio}%`;
     return;
   }
 
@@ -340,7 +365,7 @@ function applyState(state, options = {}) {
   }
 
   runStatusPill.textContent = formatStatus(state.status);
-  heroStatusText.textContent = formatStatus(state.status);
+  heroStatusText.textContent = `${formatMode(state.mode)} · ${formatStatus(state.status)}`;
 
   if (options.replaceLogBuffer && state.logs) {
     replaceLogs(state.logs);
@@ -355,6 +380,7 @@ function applyState(state, options = {}) {
   stopButton.disabled = !busy;
   stopButton.classList.toggle("hidden", !busy);
   form.querySelector("#runButton").disabled = busy;
+  transcriptRunButton.disabled = busy;
 }
 
 function connectEvents() {
@@ -375,7 +401,11 @@ async function startRun(mode, overrides = {}) {
   };
 
   saveConfig(config);
-  const endpoint = mode === "setup" ? "/api/setup" : "/api/run";
+  const endpoint = mode === "setup"
+    ? "/api/setup"
+    : mode === "transcriptSync"
+      ? "/api/transcript-sync"
+      : "/api/run";
   await postJson(endpoint, config);
 }
 
@@ -383,6 +413,14 @@ form.addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
     await startRun("audit");
+  } catch (error) {
+    alert(error.message);
+  }
+});
+
+transcriptRunButton.addEventListener("click", async () => {
+  try {
+    await startRun("transcriptSync");
   } catch (error) {
     alert(error.message);
   }

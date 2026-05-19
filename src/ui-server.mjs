@@ -66,6 +66,7 @@ const state = {
     sheetTab: "",
     nColumn: "D",
     statusColumn: "E",
+    commentColumn: "F",
     browser: "brave",
     limit: "",
     rowFrom: "",
@@ -140,7 +141,7 @@ function inspectChunkOutput(text) {
     });
   }
 
-  const reportMatch = text.match(/Saved audit report to (.+\.json)/);
+  const reportMatch = text.match(/Saved (?:audit|transcript-sync) report to (.+\.json)/);
   if (reportMatch) {
     updateState({ reportPath: reportMatch[1].trim() });
   }
@@ -151,6 +152,18 @@ function inspectChunkOutput(text) {
       progress: {
         current: 0,
         total: Number(foundMatch[1]),
+        rowNumber: null,
+        nNumber: null,
+      },
+    });
+  }
+
+  const transcriptFoundMatch = text.match(/Found (\d+) applicant\(s\) to inspect for exact "Final Official Transcript" materials\./);
+  if (transcriptFoundMatch) {
+    updateState({
+      progress: {
+        current: 0,
+        total: Number(transcriptFoundMatch[1]),
         rowNumber: null,
         nNumber: null,
       },
@@ -176,7 +189,7 @@ function inspectLogLine(rawLine) {
     return;
   }
 
-  const progressMatch = text.match(/^\[(\d+)\/(\d+)\] Auditing row (\d+) \(([^)]+)\)$/);
+  const progressMatch = text.match(/^\[(\d+)\/(\d+)\] (?:Auditing|Syncing) row (\d+) \(([^)]+)\)$/);
   if (progressMatch) {
     currentAuditRow = {
       current: Number(progressMatch[1]),
@@ -325,6 +338,7 @@ function normalizeConfig(input) {
     sheetTab: String(input.sheetTab || "").trim(),
     nColumn: validateColumnRef(input.nColumn, "D"),
     statusColumn: validateColumnRef(input.statusColumn, "E"),
+    commentColumn: validateColumnRef(input.commentColumn, "F"),
     browser: input.browser === "chrome" ? "chrome" : "brave",
     limit: input.limit ? String(input.limit).trim() : "",
     rowFrom: input.rowFrom ? String(input.rowFrom).trim() : "",
@@ -335,13 +349,17 @@ function normalizeConfig(input) {
   };
 }
 
-function buildAuditArgs(config, mode) {
+function buildRunArgs(config, mode) {
   if (!config.sheetUrl) {
     throw new Error("Spreadsheet URL is required.");
   }
 
+  const scriptPath = mode === "transcriptSync"
+    ? path.join(projectRoot, "src", "transcript-sync.mjs")
+    : path.join(projectRoot, "src", "audit.mjs");
+
   const args = [
-    path.join(projectRoot, "src", "audit.mjs"),
+    scriptPath,
     "--sheet-url",
     config.sheetUrl,
     "--n-column",
@@ -354,6 +372,10 @@ function buildAuditArgs(config, mode) {
 
   if (config.sheetTab) {
     args.push("--sheet-tab", config.sheetTab);
+  }
+
+  if (mode === "transcriptSync") {
+    args.push("--comment-column", config.commentColumn);
   }
 
   if (mode === "setup") {
@@ -377,11 +399,15 @@ function buildAuditArgs(config, mode) {
     args.push("--report", config.reportPath);
   }
 
-  if (config.overwrite) {
+  if (mode === "audit" && config.overwrite) {
     args.push("--overwrite");
   }
 
-  if (config.dryRun) {
+  if (mode === "transcriptSync") {
+    args.push("--save");
+  }
+
+  if (mode === "audit" && config.dryRun) {
     args.push("--dry-run");
   }
 
@@ -523,10 +549,10 @@ async function loadSheetTabs(config) {
 
 function startRun(mode, config) {
   if (activeRun) {
-    throw new Error("Another audit run is already active. Stop it or wait for it to finish.");
+    throw new Error("Another run is already active. Stop it or wait for it to finish.");
   }
 
-  const args = buildAuditArgs(config, mode);
+  const args = buildRunArgs(config, mode);
   stoppedByUser = false;
   state.logs = [];
   currentAuditRow = null;
@@ -565,7 +591,7 @@ function startRun(mode, config) {
       status: stoppedByUser ? "stopped" : code === 0 ? "completed" : "failed",
       awaitingAction: null,
       finishedAt: new Date().toISOString(),
-      error: stoppedByUser ? null : code === 0 ? null : `Audit process exited with code ${code}${signal ? ` (${signal})` : ""}.`,
+      error: stoppedByUser ? null : code === 0 ? null : `Process exited with code ${code}${signal ? ` (${signal})` : ""}.`,
     });
   });
 }
@@ -654,6 +680,13 @@ const server = http.createServer(async (request, response) => {
     if (request.method === "POST" && url.pathname === "/api/run") {
       const body = normalizeConfig(await readRequestBody(request));
       startRun("audit", body);
+      sendJson(response, 200, { ok: true });
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/transcript-sync") {
+      const body = normalizeConfig(await readRequestBody(request));
+      startRun("transcriptSync", body);
       sendJson(response, 200, { ok: true });
       return;
     }

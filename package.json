@@ -6,6 +6,7 @@
     "audit": "node src/audit.mjs",
     "audit:dry": "node src/audit.mjs --dry-run",
     "audit:setup": "node src/audit.mjs --setup-only",
+    "transcript:sync": "node src/transcript-sync.mjs",
     "ui": "node src/ui-server.mjs"
   },
   "keywords": [],
@@ -14,6 +15,7 @@
   "type": "commonjs",
   "dependencies": {
     "csv-parse": "^6.2.1",
-    "playwright-core": "^1.60.0"
+    "playwright-core": "^1.60.0",
+    "tesseract.js": "^7.0.0"
   }
 }
