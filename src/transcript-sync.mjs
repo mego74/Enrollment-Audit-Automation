@@ -44,6 +44,7 @@ async function main() {
 
   const browser = await chromium.connectOverCDP(`http://127.0.0.1:${options.port}`);
   const context = browser.contexts()[0] ?? (await browser.newContext());
+  const initialPages = new Set(context.pages());
   context.on("dialog", (dialog) => {
     dialog.dismiss().catch(() => {});
   });
@@ -166,9 +167,21 @@ async function main() {
       slatePage?.close(),
       sheetPage?.close(),
     ]);
+    await closePagesCreatedDuringRun(context, initialPages);
     await closeOcrWorker();
     await browser.close().catch(() => {});
   }
+}
+
+async function closePagesCreatedDuringRun(context, initialPages) {
+  const pagesToClose = context.pages().filter((page) => !initialPages.has(page));
+  await Promise.allSettled(
+    pagesToClose.map(async (page) => {
+      if (!page.isClosed()) {
+        await page.close().catch(() => {});
+      }
+    }),
+  );
 }
 
 async function syncApplicantFinalOfficialTranscripts({ context, slatePage, slateSearchUrl, nNumber, save }) {
