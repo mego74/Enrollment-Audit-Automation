@@ -7,6 +7,7 @@
     "audit:dry": "node src/audit.mjs --dry-run",
     "audit:setup": "node src/audit.mjs --setup-only",
     "transcript:sync": "node src/transcript-sync.mjs",
+    "admit:send": "node src/admit-send.mjs",
     "ui": "node src/ui-server.mjs"
   },
   "keywords": [],

@@ -67,6 +67,7 @@ const state = {
     nColumn: "D",
     statusColumn: "E",
     commentColumn: "F",
+    auditColumn: "G",
     browser: "brave",
     limit: "",
     rowFrom: "",
@@ -170,6 +171,18 @@ function inspectChunkOutput(text) {
     });
   }
 
+  const admitSendFoundMatch = text.match(/Found (\d+) applicant\(s\) ready for the final Reader send step\./);
+  if (admitSendFoundMatch) {
+    updateState({
+      progress: {
+        current: 0,
+        total: Number(admitSendFoundMatch[1]),
+        rowNumber: null,
+        nNumber: null,
+      },
+    });
+  }
+
   const loadedMatch = text.match(/Loaded (\d+) row\(s\) from the report\./);
   if (loadedMatch) {
     updateState({
@@ -204,6 +217,25 @@ function inspectLogLine(rawLine) {
         ...currentAuditRow,
       },
     });
+    return;
+  }
+
+  const admitSendMatch = text.match(/^-> (.+?) \[(Preview|Sent|Not sent)\] (.+)$/);
+  if (admitSendMatch && currentAuditRow && state?.mode === "admitSend") {
+    const applicantLabel = admitSendMatch[1].trim();
+    const verb = admitSendMatch[2];
+    const actionSummary = admitSendMatch[3].trim();
+    const recentResults = upsertRecentResult(state.recentResults, {
+      rowNumber: currentAuditRow.rowNumber,
+      nNumber: currentAuditRow.nNumber,
+      statusKey: "neutral",
+      statusText: actionSummary,
+      shortLabel: applicantLabel,
+      written: verb === "Sent",
+    });
+
+    updateState({ recentResults });
+    currentAuditRow = null;
     return;
   }
 
@@ -339,6 +371,7 @@ function normalizeConfig(input) {
     nColumn: validateColumnRef(input.nColumn, "D"),
     statusColumn: validateColumnRef(input.statusColumn, "E"),
     commentColumn: validateColumnRef(input.commentColumn, "F"),
+    auditColumn: validateColumnRef(input.auditColumn, "G"),
     browser: input.browser === "chrome" ? "chrome" : "brave",
     limit: input.limit ? String(input.limit).trim() : "",
     rowFrom: input.rowFrom ? String(input.rowFrom).trim() : "",
@@ -356,7 +389,9 @@ function buildRunArgs(config, mode) {
 
   const scriptPath = mode === "transcriptSync"
     ? path.join(projectRoot, "src", "transcript-sync.mjs")
-    : path.join(projectRoot, "src", "audit.mjs");
+    : mode === "admitSend"
+      ? path.join(projectRoot, "src", "admit-send.mjs")
+      : path.join(projectRoot, "src", "audit.mjs");
 
   const args = [
     scriptPath,
@@ -376,6 +411,10 @@ function buildRunArgs(config, mode) {
 
   if (mode === "transcriptSync") {
     args.push("--comment-column", config.commentColumn);
+  }
+
+  if (mode === "admitSend") {
+    args.push("--audit-column", config.auditColumn);
   }
 
   if (mode === "setup") {
@@ -404,6 +443,10 @@ function buildRunArgs(config, mode) {
   }
 
   if (mode === "transcriptSync") {
+    args.push("--save");
+  }
+
+  if (mode === "admitSend") {
     args.push("--save");
   }
 
@@ -687,6 +730,13 @@ const server = http.createServer(async (request, response) => {
     if (request.method === "POST" && url.pathname === "/api/transcript-sync") {
       const body = normalizeConfig(await readRequestBody(request));
       startRun("transcriptSync", body);
+      sendJson(response, 200, { ok: true });
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/admit-send") {
+      const body = normalizeConfig(await readRequestBody(request));
+      startRun("admitSend", body);
       sendJson(response, 200, { ok: true });
       return;
     }

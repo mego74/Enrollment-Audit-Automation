@@ -1,6 +1,7 @@
 const form = document.querySelector("#audit-form");
 const stopButton = document.querySelector("#stopButton");
 const transcriptRunButton = document.querySelector("#transcriptRunButton");
+const admitSendRunButton = document.querySelector("#admitSendRunButton");
 const actionCard = document.querySelector("#actionCard");
 const actionButton = document.querySelector("#actionButton");
 const actionTitle = document.querySelector("#actionTitle");
@@ -27,6 +28,7 @@ const fields = {
   nColumn: document.querySelector("#nColumn"),
   statusColumn: document.querySelector("#statusColumn"),
   commentColumn: document.querySelector("#commentColumn"),
+  auditColumn: document.querySelector("#auditColumn"),
   browser: document.querySelector("#browser"),
   limit: document.querySelector("#limit"),
   rowFrom: document.querySelector("#rowFrom"),
@@ -98,6 +100,7 @@ function getConfigFromForm() {
     nColumn: fields.nColumn.value.trim().toUpperCase() || "D",
     statusColumn: fields.statusColumn.value.trim().toUpperCase() || "E",
     commentColumn: fields.commentColumn.value.trim().toUpperCase() || "F",
+    auditColumn: fields.auditColumn.value.trim().toUpperCase() || "G",
     browser: fields.browser.value,
     limit: fields.limit.value.trim(),
     rowFrom: fields.rowFrom.value.trim(),
@@ -120,6 +123,7 @@ function applyConfigToForm(config) {
   fields.nColumn.value = config.nColumn || "D";
   fields.statusColumn.value = config.statusColumn || "E";
   fields.commentColumn.value = config.commentColumn || "F";
+  fields.auditColumn.value = config.auditColumn || "G";
   fields.browser.value = config.browser || "brave";
   fields.limit.value = config.limit || "";
   fields.rowFrom.value = config.rowFrom || "";
@@ -234,6 +238,9 @@ function formatMode(mode) {
   if (mode === "transcriptSync") {
     return "FOT Check";
   }
+  if (mode === "admitSend") {
+    return "Admit Send";
+  }
   if (mode === "setup") {
     return "Sign-in Setup";
   }
@@ -269,7 +276,7 @@ function updateProgress(progress) {
     return;
   }
 
-  if (currentState?.mode === "transcriptSync" && progress?.total) {
+  if ((currentState?.mode === "transcriptSync" || currentState?.mode === "admitSend") && progress?.total) {
     const ratio = Math.max(0, Math.min(100, Math.round((progress.current / progress.total) * 100)));
     progressLabel.textContent = `${progress.current} of ${progress.total} applicants`;
     progressDetail.textContent = progress.rowNumber
@@ -381,6 +388,7 @@ function applyState(state, options = {}) {
   stopButton.classList.toggle("hidden", !busy);
   form.querySelector("#runButton").disabled = busy;
   transcriptRunButton.disabled = busy;
+  admitSendRunButton.disabled = busy;
 }
 
 function connectEvents() {
@@ -405,6 +413,8 @@ async function startRun(mode, overrides = {}) {
     ? "/api/setup"
     : mode === "transcriptSync"
       ? "/api/transcript-sync"
+      : mode === "admitSend"
+        ? "/api/admit-send"
       : "/api/run";
   await postJson(endpoint, config);
 }
@@ -421,6 +431,14 @@ form.addEventListener("submit", async (event) => {
 transcriptRunButton.addEventListener("click", async () => {
   try {
     await startRun("transcriptSync");
+  } catch (error) {
+    alert(error.message);
+  }
+});
+
+admitSendRunButton.addEventListener("click", async () => {
+  try {
+    await startRun("admitSend");
   } catch (error) {
     alert(error.message);
   }
