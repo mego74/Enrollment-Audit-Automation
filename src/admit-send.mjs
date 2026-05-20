@@ -389,6 +389,22 @@ async function hasReaderControlText(readerPage, textPattern) {
 }
 
 async function clickReaderNamedButton(readerPage, label) {
+  const preferredSelectors = {
+    "Add to Queue": ".reader_queue_add",
+    "Remove from Queue": ".reader_queue_manage",
+    "Review Form / Send to Bin": ".reader_send",
+  };
+
+  const preferredSelector = preferredSelectors[label];
+  if (preferredSelector) {
+    const preferred = readerPage.locator(preferredSelector).first();
+    if (await preferred.isVisible().catch(() => false)) {
+      await preferred.scrollIntoViewIfNeeded().catch(() => {});
+      await preferred.click({ timeout: 10_000, force: true });
+      return;
+    }
+  }
+
   const byText = readerPage.getByText(label, { exact: true }).first();
   if (await byText.isVisible().catch(() => false)) {
     try {
@@ -544,13 +560,13 @@ async function openReaderPage(readerPage, readerUrl) {
     try {
       await readerPage.goto(readerUrl, { waitUntil: "domcontentloaded" });
       await readerPage.waitForLoadState("domcontentloaded").catch(() => {});
-      await delay(1_500);
+      await waitForReaderApplicantView(readerPage);
       return;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const onReaderPage = readerPage.url().includes("/manage/reader/");
       if (message.includes("ERR_ABORTED") && onReaderPage) {
-        await delay(1_500);
+        await waitForReaderApplicantView(readerPage);
         return;
       }
       if (attempt === 2) {
@@ -559,6 +575,24 @@ async function openReaderPage(readerPage, readerUrl) {
       await delay(1_000);
     }
   }
+}
+
+async function waitForReaderApplicantView(readerPage) {
+  await readerPage.waitForFunction(() => {
+    const bodyText = document.body?.innerText || "";
+    const hasApplicantHeader = /\b\d{7,}\s+[^\n]+/.test(bodyText);
+    const hasReaderFooterState =
+      bodyText.includes("Displaying Copy")
+      || bodyText.includes("Add to Queue")
+      || bodyText.includes("Remove from Queue")
+      || bodyText.includes("Review Form / Send to Bin");
+    const stillOnDashboard =
+      bodyText.includes("Faculty Deadlines")
+      || bodyText.includes("Faculty Reader Training Materials");
+    return hasApplicantHeader && hasReaderFooterState && !stillOnDashboard;
+  }, { timeout: 20_000 });
+
+  await delay(500);
 }
 
 async function openApplicantRecord(slatePage, slateSearchUrl, nNumber) {
