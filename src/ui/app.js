@@ -13,6 +13,7 @@ const heroProgressText = document.querySelector("#hero-progress-text");
 const progressLabel = document.querySelector("#progress-label");
 const progressDetail = document.querySelector("#progress-detail");
 const progressFill = document.querySelector("#progress-fill");
+const themeToggle = document.querySelector("#themeToggle");
 const resultsHeadline = document.querySelector("#resultsHeadline");
 const recentResultsList = document.querySelector("#recentResults");
 const summaryCounts = {
@@ -29,6 +30,8 @@ const fields = {
   statusColumn: document.querySelector("#statusColumn"),
   commentColumn: document.querySelector("#commentColumn"),
   auditColumn: document.querySelector("#auditColumn"),
+  detailColumn: document.querySelector("#detailColumn"),
+  includeFotDetail: document.querySelector("#includeFotDetail"),
   browser: document.querySelector("#browser"),
   limit: document.querySelector("#limit"),
   rowFrom: document.querySelector("#rowFrom"),
@@ -36,6 +39,7 @@ const fields = {
 };
 
 const STORAGE_KEY = "slate-audit-ui-config";
+const THEME_STORAGE_KEY = "slate-audit-ui-theme";
 let currentState = null;
 let eventSource = null;
 let tabLoadTimer = null;
@@ -44,6 +48,26 @@ let loadedSheetTabsKey = "";
 const DEFAULT_SHEET_TAB_LABEL = "Current sheet in link";
 const LOADING_SHEET_TAB_LABEL = "Loading sheet tabs...";
 const EMPTY_SHEET_TAB_LABEL = "No sheet tabs found";
+
+function getPreferredTheme() {
+  const storedTheme = localStorage.getItem(THEME_STORAGE_KEY);
+  if (storedTheme === "dark" || storedTheme === "light") {
+    return storedTheme;
+  }
+
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+function applyTheme(theme) {
+  document.body.dataset.theme = theme;
+  themeToggle.textContent = theme === "dark" ? "Light mode" : "Dark mode";
+  themeToggle.setAttribute("aria-pressed", String(theme === "dark"));
+}
+
+function setTheme(theme) {
+  localStorage.setItem(THEME_STORAGE_KEY, theme);
+  applyTheme(theme);
+}
 
 function loadSavedConfig() {
   try {
@@ -101,6 +125,8 @@ function getConfigFromForm() {
     statusColumn: fields.statusColumn.value.trim().toUpperCase() || "E",
     commentColumn: fields.commentColumn.value.trim().toUpperCase() || "F",
     auditColumn: fields.auditColumn.value.trim().toUpperCase() || "G",
+    detailColumn: fields.detailColumn.value.trim().toUpperCase() || "H",
+    includeFotDetail: fields.includeFotDetail.checked,
     browser: fields.browser.value,
     limit: fields.limit.value.trim(),
     rowFrom: fields.rowFrom.value.trim(),
@@ -124,6 +150,8 @@ function applyConfigToForm(config) {
   fields.statusColumn.value = config.statusColumn || "E";
   fields.commentColumn.value = config.commentColumn || "F";
   fields.auditColumn.value = config.auditColumn || "G";
+  fields.detailColumn.value = config.detailColumn || "H";
+  fields.includeFotDetail.checked = Boolean(config.includeFotDetail);
   fields.browser.value = config.browser || "brave";
   fields.limit.value = config.limit || "";
   fields.rowFrom.value = config.rowFrom || "";
@@ -482,6 +510,12 @@ fields.sheetTab.addEventListener("focus", () => {
   loadSheetTabs({ silent: false }).catch(() => {});
 });
 
+themeToggle.addEventListener("click", () => {
+  const nextTheme = document.body.dataset.theme === "dark" ? "light" : "dark";
+  setTheme(nextTheme);
+});
+
+applyTheme(getPreferredTheme());
 applyConfigToForm(loadSavedConfig());
 refreshState().catch(() => {});
 connectEvents();

@@ -28,6 +28,10 @@ const FORMULA_BAR_SELECTORS = [
   'textarea[aria-label="Formula bar"]',
   'textarea[aria-label*="formula" i]',
 ];
+const FILL_COLOR_BUTTON_SELECTORS = [
+  '[aria-label="Fill color"]',
+  '[data-tooltip="Fill color"]',
+];
 const SCREENSHOT_DIRNAME = "reports";
 const SLATE_PAGE_RECYCLE_INTERVAL = 75;
 
@@ -138,6 +142,7 @@ async function main() {
           fotRowsFound: audit.fotRowsFound,
           podRowFound: audit.podRowFound,
           notes: audit.notes,
+          fotDetailComment: buildFotDetailComment(audit),
           rawChecklistRows: audit.relevantRows,
           error: null,
         };
@@ -160,6 +165,7 @@ async function main() {
           fotRowsFound: 0,
           podRowFound: false,
           notes: [],
+          fotDetailComment: "",
           rawChecklistRows: [],
           error: error instanceof Error ? error.message : String(error),
           screenshotPath,
@@ -279,13 +285,16 @@ async function maybeWriteResults(terminal, sheetPage, sheetInfo, writableResults
 
   console.log("");
   console.log(`Ready to write ${writableResults.length} status value(s) back into column ${options.statusColumn}.`);
+  if (options.includeFotDetail) {
+    console.log(`FOT school details will also be written into column ${options.detailColumn}.`);
+  }
   await terminal.question("Press Enter to write the results into Google Sheets... ");
 
   console.log("Writing results to Google Sheets...");
   const writeFailures = await writeStatusesToSheet(sheetPage, sheetInfo, options, writableResults);
   await delay(5_000);
   const verificationRows = await fetchSheetRows(sheetPage, sheetInfo, options);
-  const verificationFailures = verifyWriteBack(verificationRows, writableResults);
+  const verificationFailures = verifyWriteBack(verificationRows, writableResults, options);
   const allFailures = mergeWriteFailures(writeFailures, verificationFailures);
 
   if (allFailures.length === 0) {
@@ -309,6 +318,8 @@ function parseArgs(argv) {
     reportPath: null,
     sheetTab: "",
     statusColumn: "E",
+    detailColumn: "H",
+    includeFotDetail: false,
     overwrite: false,
     dryRun: false,
     setupOnly: false,
@@ -348,6 +359,13 @@ function parseArgs(argv) {
       case "--status-column":
         options.statusColumn = next;
         index += 1;
+        break;
+      case "--detail-column":
+        options.detailColumn = next;
+        index += 1;
+        break;
+      case "--include-fot-detail":
+        options.includeFotDetail = true;
         break;
       case "--report":
         options.reportPath = next;
@@ -406,8 +424,10 @@ function parseArgs(argv) {
 
   options.nColumn = normalizeColumnRef(options.nColumn, "--n-column");
   options.statusColumn = normalizeColumnRef(options.statusColumn, "--status-column");
+  options.detailColumn = normalizeColumnRef(options.detailColumn, "--detail-column");
   options.nColumnIndex = columnRefToIndex(options.nColumn);
   options.statusColumnIndex = columnRefToIndex(options.statusColumn);
+  options.detailColumnIndex = columnRefToIndex(options.detailColumn);
 
   return options;
 }
@@ -426,6 +446,8 @@ Optional flags:
   --report reports/audit-report-...json
   --sheet-tab Test
   --status-column E
+  --detail-column H
+  --include-fot-detail
   --overwrite
   --dry-run
   --setup-only
@@ -730,6 +752,7 @@ async function fetchSheetRows(sheetPage, sheetInfo, options) {
       decision: safeCells[2]?.trim() ?? "",
       nNumber: safeCells[options.nColumnIndex]?.trim() ?? "",
       originalStatus: safeCells[options.statusColumnIndex]?.trim() ?? "",
+      originalDetail: safeCells[options.detailColumnIndex]?.trim() ?? "",
       cells: safeCells,
     };
   });
@@ -1075,6 +1098,51 @@ function buildAuditNotes(proofOfDegree, finalOfficialTranscriptRows) {
   return notes;
 }
 
+function extractFotSchoolLabel(subject) {
+  const match = String(subject || "").match(/^Final Official Transcript\s*\((.+)\)$/i);
+  return match?.[1]?.trim() || "Unspecified school";
+}
+
+function buildFotDetailComment(audit) {
+  const transcriptRows = Array.isArray(audit?.relevantRows)
+    ? audit.relevantRows.filter((row) => /^Final Official Transcript\b/i.test(row.subject))
+    : [];
+
+  if (transcriptRows.length === 0) {
+    return "No Final Official Transcript rows found";
+  }
+
+  const groupedRows = new Map();
+  for (const row of transcriptRows) {
+    const school = extractFotSchoolLabel(row.subject);
+    const rows = groupedRows.get(school) || [];
+    rows.push(row);
+    groupedRows.set(school, rows);
+  }
+
+  const satisfiedSchools = [];
+  const missingSchools = [];
+
+  for (const [school, rows] of groupedRows.entries()) {
+    const isSatisfied = rows.every((row) => isChecklistRowSatisfied(row));
+    if (isSatisfied) {
+      satisfiedSchools.push(school);
+    } else {
+      missingSchools.push(school);
+    }
+  }
+
+  const lines = [];
+  if (missingSchools.length > 0) {
+    lines.push(`Missing FOT: ${missingSchools.join(", ")}`);
+  }
+  if (satisfiedSchools.length > 0) {
+    lines.push(`Satisfied: ${satisfiedSchools.join(", ")}`);
+  }
+
+  return lines.join(" | ");
+}
+
 function mapAuditStatus(audit) {
   if (audit.fotSatisfied && audit.podSatisfied) {
     return APP_STATUS.complete;
@@ -1111,6 +1179,7 @@ async function writeRunReport(sheetInfo, results, options) {
     columns: {
       nColumn: options.nColumn,
       statusColumn: options.statusColumn,
+      detailColumn: options.detailColumn,
     },
     sheetUrl: sheetInfo.rawUrl,
     results,
@@ -1133,21 +1202,40 @@ async function writeStatusesToSheet(sheetPage, sheetInfo, options, results) {
     }
 
     const existingValue = currentRowsByNumber.get(result.rowNumber)?.originalStatus ?? "";
-    if (existingValue === result.appStatus) {
+    const expectedDetail = options.includeFotDetail ? (result.fotDetailComment ?? "") : null;
+    const existingDetail = currentRowsByNumber.get(result.rowNumber)?.originalDetail ?? "";
+    const statusMatches = existingValue === result.appStatus;
+    const detailMatches = expectedDetail === null || existingDetail === expectedDetail;
+    const shouldHighlightPurple = shouldHighlightNyuMissing(expectedDetail);
+
+    if (statusMatches && detailMatches && !shouldHighlightPurple) {
       console.log(`[Write ${index + 1}/${results.length}] Already matched row ${result.rowNumber} -> ${result.appStatus}`);
       continue;
     }
 
     let wroteRow = false;
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      await selectRange(sheetPage, `${options.statusColumn}${result.rowNumber}`);
-      await writeFormulaValue(sheetPage, result.appStatus);
+      if (!statusMatches) {
+        await selectRange(sheetPage, `${options.statusColumn}${result.rowNumber}`);
+        await writeFormulaValue(sheetPage, result.appStatus);
+      }
+      if (expectedDetail !== null && !detailMatches) {
+        await selectRange(sheetPage, `${options.detailColumn}${result.rowNumber}`);
+        await writeFormulaValue(sheetPage, expectedDetail);
+      }
+      if (expectedDetail !== null && shouldHighlightPurple) {
+        await selectRange(sheetPage, `${options.detailColumn}${result.rowNumber}`);
+        await applyPurpleFill(sheetPage);
+      }
       const committed = await waitForSheetValue(
         sheetPage,
         sheetInfo,
         options,
         result.rowNumber,
-        result.appStatus,
+        {
+          status: result.appStatus,
+          detail: expectedDetail,
+        },
         4_000,
       );
       if (committed) {
@@ -1156,8 +1244,9 @@ async function writeStatusesToSheet(sheetPage, sheetInfo, options, results) {
           name: result.name,
           nNumber: result.nNumber,
           originalStatus: result.appStatus,
+          originalDetail: expectedDetail ?? existingDetail,
         });
-        console.log(`[Write ${index + 1}/${results.length}] Wrote row ${result.rowNumber} -> ${result.appStatus}`);
+        console.log(`[Write ${index + 1}/${results.length}] Wrote row ${result.rowNumber} -> ${result.appStatus}${expectedDetail !== null ? ` | ${expectedDetail}` : ""}`);
         wroteRow = true;
         break;
       }
@@ -1174,13 +1263,33 @@ async function writeStatusesToSheet(sheetPage, sheetInfo, options, results) {
       console.log(`[Write ${index + 1}/${results.length}] Could not verify row ${result.rowNumber} -> ${result.appStatus}`);
       failures.push({
         rowNumber: result.rowNumber,
-        expected: result.appStatus,
-        actual: currentRowsByNumber.get(result.rowNumber)?.originalStatus ?? "",
+        expected: formatExpectedWriteValue(result.appStatus, expectedDetail),
+        actual: formatExpectedWriteValue(
+          currentRowsByNumber.get(result.rowNumber)?.originalStatus ?? "",
+          expectedDetail !== null ? currentRowsByNumber.get(result.rowNumber)?.originalDetail ?? "" : null,
+        ),
       });
     }
   }
 
   return failures;
+}
+
+function formatExpectedWriteValue(statusValue, detailValue) {
+  if (detailValue === null || detailValue === undefined) {
+    return statusValue;
+  }
+
+  return `${statusValue} || ${detailValue}`;
+}
+
+function shouldHighlightNyuMissing(detailValue) {
+  if (!detailValue) {
+    return false;
+  }
+
+  const text = String(detailValue).toLowerCase();
+  return text.includes("missing fot:") && (text.includes("nyu") || text.includes("new york university"));
 }
 
 async function selectRange(sheetPage, range) {
@@ -1210,6 +1319,19 @@ async function writeFormulaValue(sheetPage, value) {
   await sheetPage.keyboard.press("Enter");
 }
 
+async function applyPurpleFill(sheetPage) {
+  const fillButton = await findVisibleLocator(sheetPage, FILL_COLOR_BUTTON_SELECTORS);
+  if (!fillButton) {
+    throw new Error("Could not find the Google Sheets fill color button.");
+  }
+
+  await fillButton.click();
+  const purpleSwatch = sheetPage.locator('td[aria-label="purple"], td[aria-label="dark purple 2"], td[aria-label="dark purple 1"]').first();
+  await purpleSwatch.waitFor({ timeout: 5_000 });
+  await purpleSwatch.click();
+  await delay(200);
+}
+
 async function findVisibleLocator(page, selectors) {
   for (const selector of selectors) {
     const locator = page.locator(selector).first();
@@ -1221,13 +1343,15 @@ async function findVisibleLocator(page, selectors) {
   return null;
 }
 
-async function waitForSheetValue(sheetPage, sheetInfo, options, rowNumber, expectedValue, timeoutMs) {
+async function waitForSheetValue(sheetPage, sheetInfo, options, rowNumber, expected, timeoutMs) {
   const startedAt = Date.now();
 
   while (Date.now() - startedAt < timeoutMs) {
     const rows = await fetchSheetRows(sheetPage, sheetInfo, options);
-    const currentValue = rows.find((row) => row.rowNumber === rowNumber)?.originalStatus ?? "";
-    if (currentValue === expectedValue) {
+    const currentRow = rows.find((row) => row.rowNumber === rowNumber);
+    const statusMatches = (currentRow?.originalStatus ?? "") === expected.status;
+    const detailMatches = expected.detail === null || (currentRow?.originalDetail ?? "") === expected.detail;
+    if (statusMatches && detailMatches) {
       return true;
     }
 
@@ -1237,15 +1361,22 @@ async function waitForSheetValue(sheetPage, sheetInfo, options, rowNumber, expec
   return false;
 }
 
-function verifyWriteBack(sheetRows, expectedResults) {
+function verifyWriteBack(sheetRows, expectedResults, options) {
   const rowsByNumber = new Map(sheetRows.map((row) => [row.rowNumber, row]));
   return expectedResults
     .map((result) => {
-      const actual = rowsByNumber.get(result.rowNumber)?.originalStatus ?? "";
+      const row = rowsByNumber.get(result.rowNumber);
+      const expectedDetail = options.includeFotDetail ? (result.fotDetailComment ?? "") : null;
       return {
         rowNumber: result.rowNumber,
-        expected: result.appStatus,
-        actual,
+        expected: formatExpectedWriteValue(
+          result.appStatus,
+          expectedDetail,
+        ),
+        actual: formatExpectedWriteValue(
+          row?.originalStatus ?? "",
+          expectedDetail !== null ? row?.originalDetail ?? "" : null,
+        ),
       };
     })
     .filter((result) => result.expected !== result.actual);

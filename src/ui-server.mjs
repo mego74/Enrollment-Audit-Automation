@@ -68,6 +68,8 @@ const state = {
     statusColumn: "E",
     commentColumn: "F",
     auditColumn: "G",
+    detailColumn: "H",
+    includeFotDetail: false,
     browser: "brave",
     limit: "",
     rowFrom: "",
@@ -372,6 +374,8 @@ function normalizeConfig(input) {
     statusColumn: validateColumnRef(input.statusColumn, "E"),
     commentColumn: validateColumnRef(input.commentColumn, "F"),
     auditColumn: validateColumnRef(input.auditColumn, "G"),
+    detailColumn: validateColumnRef(input.detailColumn, "H"),
+    includeFotDetail: Boolean(input.includeFotDetail),
     browser: input.browser === "chrome" ? "chrome" : "brave",
     limit: input.limit ? String(input.limit).trim() : "",
     rowFrom: input.rowFrom ? String(input.rowFrom).trim() : "",
@@ -415,6 +419,10 @@ function buildRunArgs(config, mode) {
 
   if (mode === "admitSend") {
     args.push("--audit-column", config.auditColumn);
+  }
+
+  if (mode === "audit" && config.includeFotDetail) {
+    args.push("--detail-column", config.detailColumn, "--include-fot-detail");
   }
 
   if (mode === "setup") {

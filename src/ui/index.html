@@ -18,6 +18,11 @@
           </p>
         </div>
         <div class="hero-panel">
+          <div class="theme-switcher">
+            <button type="button" id="themeToggle" class="theme-toggle" aria-pressed="false">
+              Dark mode
+            </button>
+          </div>
           <div class="hero-stat">
             <span class="hero-stat-label">Current Step</span>
             <strong id="hero-status-text">Idle</strong>
@@ -79,6 +84,18 @@
               <label class="field">
                 <span>Audit Column</span>
                 <input id="auditColumn" name="auditColumn" type="text" maxlength="4" value="G" required />
+              </label>
+            </div>
+
+            <div class="field-row">
+              <label class="field">
+                <span>FOT Detail Column</span>
+                <input id="detailColumn" name="detailColumn" type="text" maxlength="4" value="H" />
+              </label>
+
+              <label class="toggle">
+                <input id="includeFotDetail" name="includeFotDetail" type="checkbox" />
+                <span>Add per-school FOT details during Start Audit</span>
               </label>
             </div>
 
